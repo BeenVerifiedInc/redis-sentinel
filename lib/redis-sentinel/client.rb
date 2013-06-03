@@ -8,6 +8,7 @@ class Redis::Client
   end
   
   DEFAULT_FAILOVER_RECONNECT_WAIT_SECONDS = 0.1
+  DEFAULT_MASTER_DISCOVERY_ATTEMPTS = 2
   
   def initialize_with_sentinel(options = { })
     @master_name                = fetch_option(options, :master_name)
@@ -16,7 +17,9 @@ class Redis::Client
     @failover_reconnect_timeout = fetch_option(options, :failover_reconnect_timeout)
     @failover_reconnect_wait    = fetch_option(options, :failover_reconnect_wait) ||
                                   DEFAULT_FAILOVER_RECONNECT_WAIT_SECONDS
-
+    @master_discovery_attempts  = fetch_option(options, :master_discover_attempts) ||
+                                  DEFAULT_MASTER_DISCOVERY_ATTEMPTS
+    
     initialize_without_sentinel(options)
   end
 
@@ -44,11 +47,15 @@ class Redis::Client
   def auto_retry_with_timeout(&block)
     deadline = @failover_reconnect_timeout.to_i + Time.now.to_f
     begin
-      block.call
+      with_timeout(@failover_reconnect_timeout.to_f) do
+        block.call
+      end
     rescue Redis::CannotConnectError, Errno::ECONNREFUSED
       raise if Time.now.to_f > deadline
       sleep @failover_reconnect_wait
       retry
+    rescue Timeout::Error
+      raise Redis::TimeoutError.new("Timeout connecting to sentinels")
     end
   end
 
@@ -61,7 +68,14 @@ class Redis::Client
   end
 
   def discover_master
+    attempts = 0
     while true
+      if attempts > (@master_discovery_attempts * @sentinels.length)
+        is_down = 1
+        break
+      end
+      
+      attempts += 1
       sentinel = redis_sentinels[@sentinels[0]]
 
       begin
@@ -102,6 +116,29 @@ class Redis::Client
   def redis_sentinels
     @redis_sentinels ||= Hash.new do |hash, config|
       hash[config] = Redis.new(config)
+    end
+  end
+  
+  protected
+  
+  begin
+    require "system_timer"
+
+    def with_timeout(seconds, &block)
+      SystemTimer.timeout_after(seconds, &block)
+    end
+
+  rescue LoadError
+    if ! defined?(RUBY_ENGINE)
+      # MRI 1.8, all other interpreters define RUBY_ENGINE, JRuby and
+      # Rubinius should have no issues with timeout.
+      warn "WARNING: using the built-in Timeout class which is known to have issues when used for opening connections. Install the SystemTimer gem if you want to make sure the Redis client will not hang."
+    end
+
+    require "timeout"
+
+    def with_timeout(seconds, &block)
+      Timeout.timeout(seconds, &block)
     end
   end
   
