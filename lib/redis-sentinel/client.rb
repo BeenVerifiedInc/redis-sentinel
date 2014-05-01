@@ -15,6 +15,7 @@ class Redis::Client
       @failover_reconnect_wait = fetch_option(options, :failover_reconnect_wait) ||
                                  DEFAULT_FAILOVER_RECONNECT_WAIT_SECONDS
       @discovery_timeout = fetch_option(options, :discovery_timeout)
+      @master_discovery_attempts = fetch_option(options, :master_discovery_attempts)
       
       initialize_without_sentinel(options)
     end
@@ -68,10 +69,11 @@ class Redis::Client
 
     def discover_master
       deadline = @discovery_timeout.to_i + Time.now.to_f
+      attempts = 0
       
       while true
-        try_next_sentinel
-
+        try_next_sentinel and attempts += 1
+        
         begin
           master_host, master_port = current_sentinel.sentinel("get-master-addr-by-name", @master_name)
           if master_host && master_port
@@ -85,7 +87,10 @@ class Redis::Client
         rescue Redis::CommandError => e
           raise unless e.message.include?("IDONTKNOW")
         rescue Redis::CannotConnectError
+          # re-raise if we set a timeout and we're overdue
           raise if @discovery_timeout && (Time.now.to_f > deadline)
+          # re-raise if we set a maximum number of discovery attempts and we've exhausted them
+          raise if @master_discovery_attempts && (attempts > (@master_discovery_attempts * @sentinels.length))
           # failed to connect to current sentinel server
         end
       end
