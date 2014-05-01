@@ -14,7 +14,8 @@ class Redis::Client
       @failover_reconnect_timeout = fetch_option(options, :failover_reconnect_timeout)
       @failover_reconnect_wait = fetch_option(options, :failover_reconnect_wait) ||
                                  DEFAULT_FAILOVER_RECONNECT_WAIT_SECONDS
-
+      @discovery_timeout = fetch_option(options, :discovery_timeout)
+      
       initialize_without_sentinel(options)
     end
 
@@ -66,6 +67,8 @@ class Redis::Client
     end
 
     def discover_master
+      deadline = @discovery_timeout.to_i + Time.now.to_f
+      
       while true
         try_next_sentinel
 
@@ -82,12 +85,15 @@ class Redis::Client
         rescue Redis::CommandError => e
           raise unless e.message.include?("IDONTKNOW")
         rescue Redis::CannotConnectError
+          raise if @discovery_timeout && (Time.now.to_f > deadline)
           # failed to connect to current sentinel server
         end
       end
     end
 
     def discover_slaves
+      deadline = @discovery_timeout.to_i + Time.now.to_f
+      
       while true
         try_next_sentinel
 
@@ -102,6 +108,7 @@ class Redis::Client
         rescue Redis::CommandError => e
           raise unless e.message.include?("IDONTKNOW")
         rescue Redis::CannotConnectError
+          raise if @discovery_timeout && (Time.now.to_f > deadline)
           # failed to connect to current sentinel server
         end
       end
