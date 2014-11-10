@@ -90,7 +90,7 @@ class Redis::Client
           # re-raise if we set a timeout and we're overdue
           raise if @discovery_timeout && (Time.now.to_f > deadline)
           # re-raise if we set a maximum number of discovery attempts and we've exhausted them
-          raise if @master_discovery_attempts && (attempts > (@master_discovery_attempts * @sentinels.length))
+          raise if @master_discovery_attempts && (attempts > (@master_discovery_attempts * @sentinels_options.length))
           # failed to connect to current sentinel server
         end
       end
